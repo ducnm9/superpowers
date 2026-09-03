@@ -79,6 +79,69 @@ ${TOOL_MAPPING}
   return _bootstrapCache;
 };
 
+// --- Embedded skill discovery ---
+//
+// In the beta, a `{ type: "directory" }` skill source did not surface skills to
+// the model, and the `.opencode/skills` symlink does not survive git-package
+// install (npm pack drops symlinks). Registering each skill as an embedded
+// source ({ type: "embedded", skill: {...} }) carries the skill content in the
+// plugin registration itself, independent of directory scanning or symlinks.
+
+const parseFrontmatter = (raw) => {
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n/);
+  const fm = {};
+  if (match) {
+    for (const line of match[1].split('\n')) {
+      const idx = line.indexOf(':');
+      if (idx > 0) {
+        const key = line.slice(0, idx).trim();
+        const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+        fm[key] = val;
+      }
+    }
+  }
+  return fm;
+};
+
+let _embeddedSkillsCache; // cached list of SkillV2Info
+
+const discoverEmbeddedSkills = () => {
+  if (_embeddedSkillsCache !== undefined) return _embeddedSkillsCache;
+
+  const skills = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(superpowersSkillsDir, { withFileTypes: true });
+  } catch {
+    _embeddedSkillsCache = skills;
+    return skills;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillFile = path.join(superpowersSkillsDir, entry.name, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) continue;
+    let raw;
+    try {
+      raw = fs.readFileSync(skillFile, 'utf8');
+    } catch {
+      continue;
+    }
+    const fm = parseFrontmatter(raw);
+    const name = fm.name || entry.name;
+    if (!fm.description) continue; // skills without a description aren't advertised
+    skills.push({
+      name,
+      description: fm.description,
+      location: path.dirname(skillFile),
+      content: raw,
+    });
+  }
+
+  _embeddedSkillsCache = skills;
+  return skills;
+};
+
 // --- Plugin definition ---
 
 // `define` lives at @opencode-ai/plugin/v2/promise. Import it lazily so this
@@ -92,18 +155,21 @@ try {
 }
 
 const setup = async (ctx) => {
-  // 1. Register the superpowers skills directory as a skill source.
-  //    NOTE: In this beta build, plugin-registered sources did NOT surface
-  //    skills to the model in testing; the reliable discovery mechanism is the
-  //    `.opencode/skills` symlink shipped in this package (OpenCode 2 auto-scans
-  //    `.opencode/skills`). This call is kept as a forward-compatible bonus in
-  //    case the beta starts honoring plugin sources. See docs/README.opencode-v2.md.
+  // 1. Register every superpowers skill as an embedded source.
+  //    Embedded sources carry the skill content in the registration itself, so
+  //    discovery does not depend on directory scanning (which did not surface
+  //    skills in the beta) or on the `.opencode/skills` symlink (which npm pack
+  //    strips during git-package install). A `{ type: "directory" }` source is
+  //    also registered as a forward-compatible bonus. See docs/README.opencode-v2.md.
   try {
     if (ctx && ctx.skill && typeof ctx.skill.transform === 'function') {
+      const embedded = discoverEmbeddedSkills();
       await ctx.skill.transform((draft) => {
-        if (draft && typeof draft.source === 'function') {
-          draft.source({ type: 'directory', path: superpowersSkillsDir });
+        if (!draft || typeof draft.source !== 'function') return;
+        for (const skill of embedded) {
+          draft.source({ type: 'embedded', skill });
         }
+        draft.source({ type: 'directory', path: superpowersSkillsDir });
       });
     }
   } catch (err) {

@@ -76,9 +76,21 @@ const ctx = {
 await definition.setup(ctx);
 
 // --- skill source registration ---
-check('registered exactly one skill source', skillSources.length === 1);
-check('skill source is a directory source', skillSources[0] && skillSources[0].type === 'directory');
-check('skill source path points at skills dir', skillSources[0] && String(skillSources[0].path).endsWith('/skills'));
+const embeddedSources = skillSources.filter((s) => s && s.type === 'embedded');
+const directorySources = skillSources.filter((s) => s && s.type === 'directory');
+
+check('registered at least one embedded skill source', embeddedSources.length >= 1);
+check('registered the brainstorming skill as embedded',
+  embeddedSources.some((s) => s.skill && s.skill.name === 'brainstorming'));
+check('embedded skills carry a description',
+  embeddedSources.every((s) => s.skill && typeof s.skill.description === 'string' && s.skill.description.length > 0));
+check('embedded skills carry content',
+  embeddedSources.every((s) => s.skill && typeof s.skill.content === 'string' && s.skill.content.includes('---')));
+check('embedded skills carry a location path',
+  embeddedSources.every((s) => s.skill && typeof s.skill.location === 'string'));
+check('also registered one directory source (forward-compat)', directorySources.length === 1);
+check('directory source points at skills dir',
+  directorySources[0] && String(directorySources[0].path).endsWith('/skills'));
 
 // --- bootstrap injected into each agent's system prompt ---
 const build = agents.find((a) => a.id === 'build');
@@ -95,14 +107,16 @@ check('maps subagent to task', build.system.includes('`task` with `subagent_type
 check('maps mutation to apply_patch', build.system.includes('`apply_patch`'));
 check('no stale @mention mapping', !build.system.includes('@mention'));
 
-// --- caching: SKILL.md read once ---
-check('bootstrap read exactly once', readCount === 1);
+// --- caching: using-superpowers/SKILL.md is read during the first setup
+//     (once for embedded discovery, once for the bootstrap) then cached. ---
+const readsAfterFirstSetup = readCount;
+check('using-superpowers SKILL.md read during first setup', readsAfterFirstSetup >= 1);
 
-// --- idempotency: running setup again does not double-inject ---
+// --- idempotency: running setup again does not double-inject or re-read ---
 await definition.setup(ctx);
 const markerCount = (build.system.match(/<EXTREMELY_IMPORTANT>/g) || []).length;
 check('idempotent (single bootstrap block after 2nd run)', markerCount === 1);
-check('bootstrap still cached after 2nd run (no extra read)', readCount === 1);
+check('caches survive 2nd run (no extra SKILL.md reads)', readCount === readsAfterFirstSetup);
 
 if (failures.length > 0) {
   for (const f of failures) console.error(`FAIL: ${f}`);
