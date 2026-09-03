@@ -48,18 +48,32 @@ To pin a version, append a tag or branch:
 
 ## How it works
 
-`setup(ctx)` runs when the plugin activates and does two things:
+The plugin is a default export from `define({ id, setup })`
+(`@opencode-ai/plugin/v2/promise`). `setup(ctx)` runs when the plugin activates
+and does two things:
 
-1. **Registers the skills directory** via `ctx.skill.transform`, adding
-   `skills/` as a skill source so OpenCode discovers every superpowers skill.
-2. **Injects the bootstrap** via `ctx.session.hook("request", ...)`. On each
-   model request it prepends the `using-superpowers` skill content (wrapped in
-   `<EXTREMELY_IMPORTANT>` tags, with the tool mapping appended) to the first
-   user message. A dedup guard skips injection when the bootstrap is already
-   present, so the per-step request hook does not double-inject.
+1. **Makes skills discoverable** by symlinking each superpowers skill into
+   `<configDir>/skills/<name>` (default `~/.config/opencode/skills/`). This is
+   the reliable mechanism: OpenCode 2 only watches a fixed set of skill
+   directories, and skill sources registered from a plugin (`ctx.skill.transform`
+   with `directory`/`embedded` sources) are not picked up in the current beta.
+   Existing real directories or non-superpowers skills of the same name are left
+   untouched; symlinks the plugin owns are refreshed to track package updates.
+   The plugin still registers `ctx.skill.transform` sources as a
+   forward-compatible bonus in case a later beta honors them.
+2. **Injects the bootstrap** via `ctx.agent.transform`. The Promise
+   `PluginContext` has no per-request/session hook, so the plugin prepends the
+   `using-superpowers` content (wrapped in `<EXTREMELY_IMPORTANT>` tags, with the
+   tool mapping appended) to every agent's `system` prompt. A dedup guard skips
+   agents whose system prompt already contains the bootstrap.
 
 The bootstrap content is read from `skills/using-superpowers/SKILL.md` once and
 cached at module level.
+
+> Why symlinks and not `.opencode/skills`: a bundled `.opencode/skills` symlink
+> does not survive git-package install (npm pack strips symlinks), and OpenCode
+> 2 does not auto-scan a plugin package's own `skills/`. Symlinking into the
+> watched config dir at runtime works for both git-install and local checkouts.
 
 ## Tool mapping
 
@@ -80,24 +94,37 @@ on OpenCode 1:
 
 The OpenCode 2 plugin API is beta; its draft and hook object shapes may change
 before the stable release. The plugin calls each v2 primitive defensively and
-logs (rather than throws) if a call fails, so an API drift degrades to "skills
-discovered by OpenCode's co-located convention, bootstrap not injected" instead
-of crashing the host. If the bootstrap stops injecting after an `opencode2`
-update, that is the signal the request-hook or skill-source contract changed.
+logs (rather than throws) if a call fails, so an API drift degrades gracefully
+instead of crashing the host. Notable behaviors observed against
+`@opencode-ai/plugin@1.18.x` (subject to change):
+
+- Skill sources registered from a plugin (`ctx.skill.transform`) are not
+  advertised to the model — hence the symlink approach above.
+- The Promise `PluginContext` exposes no session/request hook, so the bootstrap
+  rides the agent `system` prompt via `ctx.agent.transform`.
+- OpenCode 2 runs through a background service that can hold an older plugin
+  generation. After changing the plugin or clearing the package cache, use
+  `opencode2 run --standalone ...` or restart the service to pick up the change.
 
 ## Troubleshooting
 
 ### Plugin not loading
 
 1. Confirm you used the `plugins` key, not `plugin`.
-2. Check logs: `opencode2 run --print-logs "hello" 2>&1 | grep -i superpowers`
-3. List active plugins: `opencode2 plugin list`
+2. List active plugins: `opencode2 plugin list` — the `superpowers` row should
+   show a version/commit, not an empty id.
+3. If it shows empty after an update, clear the cache and reload with
+   `opencode2 run --standalone ...` (the background service can hold an older
+   plugin generation).
 
 ### Skills not found
 
-1. Use OpenCode's `skill` tool to list discovered skills.
-2. Confirm the plugin loaded (above).
-3. Each skill needs a `SKILL.md` with valid YAML frontmatter and a
+1. Check that skills were symlinked: `ls -l ~/.config/opencode/skills` should
+   list `brainstorming`, `test-driven-development`, etc. pointing at the
+   installed package.
+2. Look for `[superpowers] failed to link skill ...` in the logs.
+3. Use OpenCode's `skill` tool to list discovered skills.
+4. Each skill needs a `SKILL.md` with valid YAML frontmatter and a
    `description`; skills without a description are not advertised to the model.
 
 ### Bootstrap not appearing

@@ -12,6 +12,8 @@
 // Requires no OpenCode install; runs under plain node.
 
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { pathToFileURL } from 'url';
 
 const [, , pluginPath] = process.argv;
@@ -19,6 +21,11 @@ if (!pluginPath) {
   console.error('Usage: node test-plugin-v2.mjs PLUGIN_PATH');
   process.exit(2);
 }
+
+// Isolate the config dir the plugin symlinks skills into, so the test never
+// touches the real ~/.config/opencode/skills.
+const tmpConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-v2-cfg-'));
+process.env.OPENCODE_CONFIG_DIR = tmpConfigDir;
 
 const failures = [];
 const check = (name, cond) => {
@@ -112,11 +119,33 @@ check('no stale @mention mapping', !build.system.includes('@mention'));
 const readsAfterFirstSetup = readCount;
 check('using-superpowers SKILL.md read during first setup', readsAfterFirstSetup >= 1);
 
+// --- skill symlinks: the reliable discovery mechanism (plugin sources are
+//     ignored in the beta, so skills are symlinked into <configDir>/skills). ---
+const linkedSkillsDir = path.join(tmpConfigDir, 'skills');
+const brainstormingLink = path.join(linkedSkillsDir, 'brainstorming');
+check('created <configDir>/skills/brainstorming', fs.existsSync(brainstormingLink));
+check('brainstorming is a symlink', (() => {
+  try { return fs.lstatSync(brainstormingLink).isSymbolicLink(); } catch { return false; }
+})());
+check('brainstorming symlink points at the skill dir', (() => {
+  try { return fs.readlinkSync(brainstormingLink).endsWith('/skills/brainstorming'); } catch { return false; }
+})());
+check('linked using-superpowers skill', fs.existsSync(path.join(linkedSkillsDir, 'using-superpowers')));
+
+// A pre-existing real directory (foreign skill) must NOT be clobbered.
+const foreignDir = path.join(linkedSkillsDir, 'foreign-skill');
+fs.mkdirSync(foreignDir, { recursive: true });
+fs.writeFileSync(path.join(foreignDir, 'SKILL.md'), '---\nname: foreign\n---\n');
+
 // --- idempotency: running setup again does not double-inject or re-read ---
 await definition.setup(ctx);
 const markerCount = (build.system.match(/<EXTREMELY_IMPORTANT>/g) || []).length;
 check('idempotent (single bootstrap block after 2nd run)', markerCount === 1);
 check('caches survive 2nd run (no extra SKILL.md reads)', readCount === readsAfterFirstSetup);
+check('did not clobber a foreign real skill dir', fs.lstatSync(foreignDir).isDirectory() && !fs.lstatSync(foreignDir).isSymbolicLink());
+
+// cleanup
+try { fs.rmSync(tmpConfigDir, { recursive: true, force: true }); } catch { /* noop */ }
 
 if (failures.length > 0) {
   for (const f of failures) console.error(`FAIL: ${f}`);
