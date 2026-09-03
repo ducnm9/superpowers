@@ -25,6 +25,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -142,6 +143,66 @@ const discoverEmbeddedSkills = () => {
   return skills;
 };
 
+// --- Skill installation into an OpenCode-watched directory ---
+//
+// Verified from the server log: after loading this plugin, OpenCode 2 only
+// watches these skill sources — `~/.claude/skills`, `~/.agents/skills`,
+// `~/.config/opencode/skill(s)`. Skill sources registered from a plugin
+// (`draft.source(...)`, directory or embedded) are NOT picked up in this beta.
+// The reliable mechanism is to place skills in one of the watched directories.
+//
+// So on setup we symlink each superpowers skill into
+// `<configDir>/skills/<name>` -> `<package>/skills/<name>`. Symlinks (not
+// copies) keep skills in sync with the installed package and survive updates.
+// Existing non-superpowers skills of the same name are left untouched.
+
+const linkSkillsIntoConfigDir = () => {
+  const configDir = process.env.OPENCODE_CONFIG_DIR
+    ? path.resolve(process.env.OPENCODE_CONFIG_DIR)
+    : path.join(os.homedir(), '.config', 'opencode');
+  const targetSkillsDir = path.join(configDir, 'skills');
+
+  let created = 0;
+  try {
+    fs.mkdirSync(targetSkillsDir, { recursive: true });
+  } catch (err) {
+    console.error('[superpowers] cannot create skills dir:', err && err.message);
+    return created;
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(superpowersSkillsDir, { withFileTypes: true });
+  } catch {
+    return created;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const src = path.join(superpowersSkillsDir, entry.name);
+    if (!fs.existsSync(path.join(src, 'SKILL.md'))) continue;
+    const dest = path.join(targetSkillsDir, entry.name);
+
+    try {
+      const existing = fs.lstatSync(dest, { throwIfNoEntry: false });
+      if (existing) {
+        // Refresh only symlinks we own; never clobber a real dir or foreign skill.
+        if (existing.isSymbolicLink() && fs.readlinkSync(dest) === src) continue;
+        if (existing.isSymbolicLink()) {
+          fs.unlinkSync(dest);
+        } else {
+          continue; // a real directory / foreign skill with this name — leave it
+        }
+      }
+      fs.symlinkSync(src, dest, 'dir');
+      created += 1;
+    } catch (err) {
+      console.error(`[superpowers] failed to link skill "${entry.name}":`, err && err.message);
+    }
+  }
+  return created;
+};
+
 // --- Plugin definition ---
 
 // `define` lives at @opencode-ai/plugin/v2/promise. Import it lazily so this
@@ -155,12 +216,17 @@ try {
 }
 
 const setup = async (ctx) => {
-  // 1. Register every superpowers skill as an embedded source.
-  //    Embedded sources carry the skill content in the registration itself, so
-  //    discovery does not depend on directory scanning (which did not surface
-  //    skills in the beta) or on the `.opencode/skills` symlink (which npm pack
-  //    strips during git-package install). A `{ type: "directory" }` source is
-  //    also registered as a forward-compatible bonus. See docs/README.opencode-v2.md.
+  // 1. Make skills discoverable. In this beta, plugin-registered skill sources
+  //    are ignored (OpenCode 2 only watches fixed skill directories), so the
+  //    reliable path is to symlink each skill into `<configDir>/skills/`.
+  try {
+    linkSkillsIntoConfigDir();
+  } catch (err) {
+    console.error('[superpowers] linking skills failed:', err && err.message);
+  }
+
+  //    Also register the skills as plugin sources (embedded + directory) as a
+  //    forward-compatible bonus, in case a later beta honors plugin sources.
   try {
     if (ctx && ctx.skill && typeof ctx.skill.transform === 'function') {
       const embedded = discoverEmbeddedSkills();
