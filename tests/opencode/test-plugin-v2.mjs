@@ -1,11 +1,12 @@
 // Unit test for the OpenCode 2 plugin (.opencode/plugins/superpowers-v2.js).
 //
-// Exercises setup(ctx) against a mock v2 context and verifies:
-//   - the skills directory is registered as a skill source
-//   - the request hook injects the bootstrap into the first user message
-//     (for both string-content and array-content message shapes)
-//   - injection is idempotent (the per-step request hook does not double-inject)
-//   - SKILL.md is read once and cached (no re-read on the second request)
+// Exercises setup(ctx) against a mock v2 Promise-API context and verifies:
+//   - the skills directory is registered as a directory skill source
+//     ({ type: "directory", path }) via ctx.skill.transform
+//   - the bootstrap is prepended to each agent's `system` prompt via
+//     ctx.agent.transform (the Promise PluginContext has no session hook)
+//   - injection is idempotent (a second transform does not double-inject)
+//   - SKILL.md is read once and cached
 //   - the tool mapping targets v2-correct tools, not stale v1 wording
 //
 // Requires no OpenCode install; runs under plain node.
@@ -37,55 +38,74 @@ fs.readFileSync = function (...args) {
 const mod = await import(pathToFileURL(pluginPath).href);
 const definition = mod.default;
 check('default export exists', !!definition);
+check('default export has id "superpowers"', definition && definition.id === 'superpowers');
 check('default export has setup', typeof (definition && definition.setup) === 'function');
 
-// Mock v2 context.
+// --- Mock v2 Promise-API context ---
 const skillSources = [];
-let requestHook;
+
+// Simulated agent registry that agent.transform mutates in place.
+const agents = [
+  { id: 'build', system: 'You are the build agent.' },
+  { id: 'plan', system: '' },
+  { id: 'noSystem' }, // agent with no system field
+];
+
 const ctx = {
-  skill: { transform: (cb) => cb({ source: (p) => skillSources.push(p) }) },
-  session: { hook: (name, cb) => { if (name === 'request') requestHook = cb; } },
+  skill: {
+    transform: async (cb) => {
+      cb({ source: (s) => skillSources.push(s), list: () => skillSources.slice() });
+    },
+  },
+  agent: {
+    transform: async (cb) => {
+      cb({
+        list: () => agents,
+        get: (id) => agents.find((a) => a.id === id),
+        update: (id, fn) => {
+          const a = agents.find((x) => x.id === id);
+          if (a) fn(a);
+        },
+        default: () => {},
+        remove: () => {},
+      });
+    },
+  },
 };
 
 await definition.setup(ctx);
 
+// --- skill source registration ---
 check('registered exactly one skill source', skillSources.length === 1);
-check('skill source points at skills dir', skillSources[0] && skillSources[0].endsWith('/skills'));
-check('registered a request hook', typeof requestHook === 'function');
+check('skill source is a directory source', skillSources[0] && skillSources[0].type === 'directory');
+check('skill source path points at skills dir', skillSources[0] && String(skillSources[0].path).endsWith('/skills'));
 
-// --- string-content message shape ---
-const ev1 = { messages: [{ role: 'user', content: "Let's make a react todo list" }], system: '' };
-await requestHook(ev1);
-const c1 = ev1.messages[0].content;
-check('string-shape: bootstrap injected', c1.includes('EXTREMELY_IMPORTANT'));
-check('string-shape: original text preserved', c1.includes("Let's make a react todo list"));
-check('string-shape: maps subagent to task', c1.includes('`task` with `subagent_type: "general"`'));
-check('string-shape: maps mutation to apply_patch', c1.includes('`apply_patch`'));
-check('string-shape: no stale @mention mapping', !c1.includes('@mention'));
+// --- bootstrap injected into each agent's system prompt ---
+const build = agents.find((a) => a.id === 'build');
+const plan = agents.find((a) => a.id === 'plan');
+const noSystem = agents.find((a) => a.id === 'noSystem');
 
-const readAfterFirst = readCount;
-await requestHook(ev1); // second step
-const markerCount1 = (ev1.messages[0].content.match(/<EXTREMELY_IMPORTANT>/g) || []).length;
-check('string-shape: idempotent (single bootstrap)', markerCount1 === 1);
-check('bootstrap read once and cached', readCount === readAfterFirst);
+check('build agent got bootstrap', build.system.includes('EXTREMELY_IMPORTANT'));
+check('build agent keeps original system text', build.system.includes('You are the build agent.'));
+check('plan agent got bootstrap', plan.system.includes('EXTREMELY_IMPORTANT'));
+check('agent with no system field got bootstrap', typeof noSystem.system === 'string' && noSystem.system.includes('EXTREMELY_IMPORTANT'));
 
-// --- array-content part shape ---
-const ev2 = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], system: [] };
-await requestHook(ev2);
-const parts = ev2.messages[0].content;
-const bootstrapParts = parts.filter((p) => p.text && p.text.includes('EXTREMELY_IMPORTANT'));
-check('array-shape: one bootstrap part injected', bootstrapParts.length === 1);
-await requestHook(ev2);
-const bootstrapPartsAfter = parts.filter((p) => p.text && p.text.includes('EXTREMELY_IMPORTANT'));
-check('array-shape: idempotent (single bootstrap part)', bootstrapPartsAfter.length === 1);
+// --- tool mapping correctness ---
+check('maps subagent to task', build.system.includes('`task` with `subagent_type: "general"`'));
+check('maps mutation to apply_patch', build.system.includes('`apply_patch`'));
+check('no stale @mention mapping', !build.system.includes('@mention'));
 
-// --- system-string dedup guard ---
-const ev3 = { messages: [{ role: 'user', content: 'hello' }], system: 'prelude <EXTREMELY_IMPORTANT> already here' };
-await requestHook(ev3);
-check('system-marker: skips injection when system already has bootstrap', !ev3.messages[0].content.includes('EXTREMELY_IMPORTANT'));
+// --- caching: SKILL.md read once ---
+check('bootstrap read exactly once', readCount === 1);
+
+// --- idempotency: running setup again does not double-inject ---
+await definition.setup(ctx);
+const markerCount = (build.system.match(/<EXTREMELY_IMPORTANT>/g) || []).length;
+check('idempotent (single bootstrap block after 2nd run)', markerCount === 1);
+check('bootstrap still cached after 2nd run (no extra read)', readCount === 1);
 
 if (failures.length > 0) {
   for (const f of failures) console.error(`FAIL: ${f}`);
   process.exit(1);
 }
-console.log(`PASS: all ${13} v2 plugin checks passed`);
+console.log('PASS: all v2 plugin checks passed');
