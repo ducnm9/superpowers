@@ -1,21 +1,43 @@
 # Installing Superpowers for OpenCode
 
+OpenCode 1 (`opencode`) and OpenCode 2 (`opencode2`, the beta) use different
+plugin APIs and different config keys. Follow the section for the version you
+run. The two can be installed side by side.
+
 ## Prerequisites
 
 - [OpenCode.ai](https://opencode.ai) installed
 
-## Installation
+## Installation (OpenCode 1)
 
 Add superpowers to the `plugin` array in your `opencode.json` (global or project-level):
 
 ```json
 {
-  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git"]
+  "plugin": ["superpowers@git+https://github.com/ducnm9/superpowers.git"]
 }
 ```
 
 Restart OpenCode. The plugin installs through OpenCode's plugin manager and
 registers all skills.
+
+## Installation (OpenCode 2 / `opencode2` beta)
+
+OpenCode 2 installs as a separate `opencode2` binary
+(`npm install -g @opencode-ai/cli@beta`) and uses the `plugins` key (note the
+`s`), not `plugin`:
+
+```json
+{
+  "plugins": ["superpowers@git+https://github.com/ducnm9/superpowers.git"]
+}
+```
+
+Restart `opencode2`. OpenCode 2 loads the v2 plugin
+(`.opencode/plugins/superpowers-v2.js`), which registers the skills directory as
+a skill source and injects the bootstrap on every model request. See
+[docs/README.opencode-v2.md](../docs/README.opencode-v2.md) for details and
+troubleshooting.
 
 Verify by asking: "Tell me about your superpowers"
 
@@ -59,7 +81,7 @@ To pin a specific version:
 
 ```json
 {
-  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git#v5.0.3"]
+  "plugin": ["superpowers@git+https://github.com/ducnm9/superpowers.git#v5.0.3"]
 }
 ```
 
@@ -80,7 +102,7 @@ the plugin, try installing with system npm and pointing OpenCode at the local
 package:
 
 ```powershell
-npm install superpowers@git+https://github.com/obra/superpowers.git --prefix "$HOME\.config\opencode"
+npm install superpowers@git+https://github.com/ducnm9/superpowers.git --prefix "$HOME\.config\opencode"
 ```
 
 Then use the installed package path in `opencode.json`:

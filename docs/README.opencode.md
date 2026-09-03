@@ -2,13 +2,17 @@
 
 Complete guide for using Superpowers with [OpenCode.ai](https://opencode.ai).
 
+> **Running the `opencode2` beta (OpenCode 2)?** It uses a different plugin API
+> and the `plugins` config key. See
+> [README.opencode-v2.md](README.opencode-v2.md).
+
 ## Installation
 
 Add superpowers to the `plugin` array in your `opencode.json` (global or project-level):
 
 ```json
 {
-  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git"]
+  "plugin": ["superpowers@git+https://github.com/ducnm9/superpowers.git"]
 }
 ```
 
@@ -91,7 +95,7 @@ To pin a specific version, use a branch or tag:
 
 ```json
 {
-  "plugin": ["superpowers@git+https://github.com/obra/superpowers.git#v5.0.3"]
+  "plugin": ["superpowers@git+https://github.com/ducnm9/superpowers.git#v5.0.3"]
 }
 ```
 
@@ -134,7 +138,7 @@ the plugin, try installing with system npm and pointing OpenCode at the local
 package:
 
 ```powershell
-npm install superpowers@git+https://github.com/obra/superpowers.git --prefix "$HOME\.config\opencode"
+npm install superpowers@git+https://github.com/ducnm9/superpowers.git --prefix "$HOME\.config\opencode"
 ```
 
 Then use the installed package path in `opencode.json`:
